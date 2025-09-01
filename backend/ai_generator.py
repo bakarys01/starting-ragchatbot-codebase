@@ -1,25 +1,35 @@
-import anthropic
+from openai import OpenAI
 from typing import List, Optional, Dict, Any
 
 class AIGenerator:
-    """Handles interactions with Anthropic's Claude API for generating responses"""
+    """Handles interactions with OpenAI's GPT API for generating responses"""
     
     # Static system prompt to avoid rebuilding on each call
-    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to a comprehensive search tool for course information.
+    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to comprehensive tools for course information.
 
-Search Tool Usage:
-- Use the search tool **only** for questions about specific course content or detailed educational materials
-- **One search per query maximum**
-- Synthesize search results into accurate, fact-based responses
+Available Tools:
+1. **Course Content Search Tool**: For questions about specific course content, lessons, or detailed educational materials
+2. **Course Outline Tool**: For questions about course structure, lesson lists, course overviews, or complete course outlines
+
+Tool Usage Guidelines:
+- **Course outline/structure questions**: Use the course outline tool to get the complete course structure with all lessons
+- **Specific content questions**: Use the content search tool for detailed information within courses
+- **One tool call per query maximum**
+- Synthesize tool results into accurate, fact-based responses
 - If search yields no results, state this clearly without offering alternatives
 
 Response Protocol:
-- **General knowledge questions**: Answer using existing knowledge without searching
-- **Course-specific questions**: Search first, then answer
+- **General knowledge questions**: Answer using existing knowledge without using tools
+- **Course outline/structure questions**: Use the outline tool, then provide the complete course title, course link, and full lesson list with numbers and titles
+- **Course content questions**: Use the content search tool, then answer based on results
 - **No meta-commentary**:
- - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
- - Do not mention "based on the search results"
+ - Provide direct answers only — no reasoning process, tool explanations, or question-type analysis
+ - Do not mention "based on the search results" or "using the tool"
 
+For outline queries, ensure you return:
+- Course title (with clickable link if available)
+- Course instructor
+- Complete numbered list of all lessons with titles (and clickable links if available)
 
 All responses must be:
 1. **Brief, Concise and focused** - Get to the point quickly
@@ -30,7 +40,9 @@ Provide only the direct answer to what was asked.
 """
     
     def __init__(self, api_key: str, model: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
+        import os
+        os.environ["OPENAI_API_KEY"] = api_key
+        self.client = OpenAI()
         self.model = model
         
         # Pre-build base API parameters
@@ -57,34 +69,34 @@ Provide only the direct answer to what was asked.
             Generated response as string
         """
         
-        # Build system content efficiently - avoid string ops when possible
-        system_content = (
-            f"{self.SYSTEM_PROMPT}\n\nPrevious conversation:\n{conversation_history}"
-            if conversation_history 
-            else self.SYSTEM_PROMPT
-        )
+        # Build messages with system prompt and conversation history
+        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        
+        if conversation_history:
+            messages.append({"role": "system", "content": f"Previous conversation:\n{conversation_history}"})
+        
+        messages.append({"role": "user", "content": query})
         
         # Prepare API call parameters efficiently
         api_params = {
             **self.base_params,
-            "messages": [{"role": "user", "content": query}],
-            "system": system_content
+            "messages": messages
         }
         
         # Add tools if available
         if tools:
             api_params["tools"] = tools
-            api_params["tool_choice"] = {"type": "auto"}
+            api_params["tool_choice"] = "auto"
         
-        # Get response from Claude
-        response = self.client.messages.create(**api_params)
+        # Get response from OpenAI
+        response = self.client.chat.completions.create(**api_params)
         
         # Handle tool execution if needed
-        if response.stop_reason == "tool_use" and tool_manager:
+        if response.choices[0].finish_reason == "tool_calls" and tool_manager:
             return self._handle_tool_execution(response, api_params, tool_manager)
         
         # Return direct response
-        return response.content[0].text
+        return response.choices[0].message.content
     
     def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
         """
@@ -102,34 +114,33 @@ Provide only the direct answer to what was asked.
         messages = base_params["messages"].copy()
         
         # Add AI's tool use response
-        messages.append({"role": "assistant", "content": initial_response.content})
+        messages.append({
+            "role": "assistant", 
+            "content": initial_response.choices[0].message.content,
+            "tool_calls": initial_response.choices[0].message.tool_calls
+        })
         
         # Execute all tool calls and collect results
-        tool_results = []
-        for content_block in initial_response.content:
-            if content_block.type == "tool_use":
+        for tool_call in initial_response.choices[0].message.tool_calls:
+            if tool_call.type == "function":
+                import json
                 tool_result = tool_manager.execute_tool(
-                    content_block.name, 
-                    **content_block.input
+                    tool_call.function.name, 
+                    **json.loads(tool_call.function.arguments)
                 )
                 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": content_block.id,
-                    "content": tool_result
+                messages.append({
+                    "role": "tool",
+                    "content": str(tool_result),
+                    "tool_call_id": tool_call.id
                 })
-        
-        # Add tool results as single message
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
         
         # Prepare final API call without tools
         final_params = {
             **self.base_params,
-            "messages": messages,
-            "system": base_params["system"]
+            "messages": messages
         }
         
         # Get final response
-        final_response = self.client.messages.create(**final_params)
-        return final_response.content[0].text
+        final_response = self.client.chat.completions.create(**final_params)
+        return final_response.choices[0].message.content

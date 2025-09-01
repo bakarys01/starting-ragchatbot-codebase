@@ -5,7 +5,7 @@ const API_URL = '/api';
 let currentSessionId = null;
 
 // DOM elements
-let chatMessages, chatInput, sendButton, totalCourses, courseTitles;
+let chatMessages, chatInput, sendButton, totalCourses, courseTitles, newChatButton;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     sendButton = document.getElementById('sendButton');
     totalCourses = document.getElementById('totalCourses');
     courseTitles = document.getElementById('courseTitles');
+    newChatButton = document.getElementById('newChatButton');
     
     setupEventListeners();
     createNewSession();
@@ -28,6 +29,9 @@ function setupEventListeners() {
     chatInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
+    
+    // New chat functionality
+    newChatButton.addEventListener('click', createNewSession);
     
     
     // Suggested questions
@@ -122,10 +126,17 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     let html = `<div class="message-content">${displayContent}</div>`;
     
     if (sources && sources.length > 0) {
+        // Convert markdown sources to HTML as a list
+        const sourceItems = sources.map(source => {
+            let sourceHtml = marked.parseInline(source);
+            // Add target="_blank" to all links so they open in new tabs
+            sourceHtml = sourceHtml.replace(/<a href=/g, '<a target="_blank" href=');
+            return `<div class="source-item">${sourceHtml}</div>`;
+        }).join('');
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
-                <div class="sources-content">${sources.join(', ')}</div>
+                <div class="sources-content">${sourceItems}</div>
             </details>
         `;
     }
@@ -147,9 +158,28 @@ function escapeHtml(text) {
 // Removed removeMessage function - no longer needed since we handle loading differently
 
 async function createNewSession() {
+    // Reset session ID to create new session on next query
     currentSessionId = null;
+    
+    // Clear chat messages
     chatMessages.innerHTML = '';
+    
+    // Add welcome message
     addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
+    
+    // Clear input field
+    if (chatInput) {
+        chatInput.value = '';
+        chatInput.focus();
+    }
+    
+    // Provide visual feedback (brief button highlight)
+    if (newChatButton) {
+        newChatButton.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+            newChatButton.style.transform = '';
+        }, 100);
+    }
 }
 
 // Load course statistics
